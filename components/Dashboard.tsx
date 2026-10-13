@@ -115,7 +115,7 @@ export function Dashboard() {
   const canBook = !!myQueue || (booking.held < booking.max && !booking.cooldownUntil);
 
   return (
-    <main className="mx-auto w-full max-w-xl px-4 pb-16 pt-8">
+    <main className="mx-auto w-full max-w-xl px-4 pb-8 pt-8">
       <header className="mb-6">
         <h1 className="text-2xl font-semibold tracking-tight">Laundry</h1>
         <p className="text-sm text-muted">Two machines on the roof. Book your turn, get a ping when it&apos;s yours.</p>
