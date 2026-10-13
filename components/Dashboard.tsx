@@ -91,7 +91,7 @@ export function Dashboard() {
               void turnOnAlerts();
               setForm({ kind: "start", machine: m.id });
             }}
-            className="group rounded-2xl border border-line/15 p-3 text-left transition enabled:hover:border-line disabled:cursor-default"
+            className="group flex flex-col justify-start rounded-2xl border border-line/15 p-3 text-left transition enabled:hover:border-line disabled:cursor-default"
           >
             <WashingMachine
               status={m.status}
@@ -259,7 +259,7 @@ function MachineLine({ m, msLeft }: { m: Machine; msLeft: number }) {
   if (m.status === "done") {
     return (
       <p className="text-sm text-muted">
-        Done, waiting for pickup{held}
+        Waiting for pickup{held}
       </p>
     );
   }

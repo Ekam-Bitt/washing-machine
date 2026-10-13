@@ -40,3 +40,8 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 washing_machine_sample_line_art.png
+
+# agent skills installed by marketplace integrations
+.agents/
+.claude/
+skills-lock.json

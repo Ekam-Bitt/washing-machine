@@ -12,6 +12,9 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Agent skills installed locally by the Upstash integration.
+    ".agents/**",
+    ".claude/**",
   ]),
 ]);
 
