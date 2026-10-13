@@ -55,7 +55,7 @@ export function AdminPanel() {
   if (!data) return <p className="p-8 text-center text-sm text-muted">Loading…</p>;
 
   return (
-    <main className="mx-auto w-full max-w-xl px-4 pb-16 pt-8">
+    <main className="mx-auto w-full max-w-xl px-4 pb-8 pt-8">
       <header className="mb-6 flex items-baseline justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Laundry admin</h1>
