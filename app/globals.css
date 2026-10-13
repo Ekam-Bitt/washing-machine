@@ -2,25 +2,121 @@
 
 :root {
   --background: #ffffff;
-  --foreground: #171717;
+  --foreground: #111111;
+  --muted: #6b6b6b;
+  --line: #111111;
+  --soft: #f4f4f2;
+  color-scheme: light;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --color-soft: var(--soft);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+}
+
+/* Washing machine line art */
+.wm {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+.wm-display {
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.wm-drum {
+  transform-box: view-box;
+  transform-origin: 522px 505px;
+}
+.wm-running {
+  animation: wm-tremble 0.22s linear infinite;
+}
+.wm-running .wm-drum {
+  animation: wm-spin 2.6s linear infinite;
+}
+.wm-running .wm-water {
+  animation: wm-slosh 1.3s ease-in-out infinite alternate;
+}
+.wm-done .wm-display {
+  animation: wm-blink 1.1s steps(2, jump-none) infinite;
+}
+
+@keyframes wm-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes wm-tremble {
+  0%,
+  100% {
+    transform: translate(0, 0) rotate(0deg);
+  }
+  25% {
+    transform: translate(0.7px, -0.4px) rotate(0.15deg);
+  }
+  50% {
+    transform: translate(-0.5px, 0.3px) rotate(-0.1deg);
+  }
+  75% {
+    transform: translate(0.4px, 0.5px) rotate(0.1deg);
+  }
+}
+@keyframes wm-slosh {
+  from {
+    transform: translateX(-24px);
+  }
+  to {
+    transform: translateX(24px);
+  }
+}
+@keyframes wm-blink {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wm-running,
+  .wm-running .wm-drum,
+  .wm-running .wm-water,
+  .wm-done .wm-display {
+    animation: none;
+  }
+}
+
+@layer components {
+  .btn,
+  .btn-primary {
+    @apply inline-flex items-center justify-center rounded-full border border-line px-4 py-2 text-sm font-medium transition disabled:opacity-40;
+  }
+  .btn {
+    @apply hover:bg-soft;
+  }
+  .btn-primary {
+    @apply bg-foreground text-background hover:opacity-85;
+  }
+  .chip {
+    @apply min-w-11 rounded-full border border-line/30 px-3 py-1.5 text-sm transition hover:border-line disabled:opacity-30 aria-pressed:border-line aria-pressed:bg-foreground aria-pressed:text-background;
+  }
+  .input {
+    @apply rounded-xl border border-line/30 bg-background px-3 py-2 text-base outline-none focus:border-line;
+  }
+  .label {
+    @apply text-xs font-medium uppercase tracking-wide text-muted;
+  }
 }
