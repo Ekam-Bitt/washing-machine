@@ -9,7 +9,10 @@ export type Session = Person & {
   startedAt: number;
   endsAt: number;
   collectedAt?: number;
+  /** Cleared automatically after sitting done for hours; clothes may still be inside. */
+  autoClearedAt?: number;
   notifiedDone?: boolean;
+  remindedAt?: number;
   /** Owner of the previous load if it was still inside when this one started. */
   prev?: Person;
 };
@@ -21,11 +24,18 @@ export type QueueEntry = Person & {
   /** Set once a machine has freed up for this person. */
   calledAt?: number;
   calledFor?: MachineId;
+  /** Times this person let a hold run out while others were waiting. */
+  skips?: number;
 };
+
+export type Broken = { note: string; at: number };
 
 export type State = {
   machines: Record<MachineId, Session | null>;
   queue: QueueEntry[];
+  broken?: Partial<Record<MachineId, Broken>>;
+  /** Wake-up times (unix seconds) already handed to QStash. */
+  scheduled?: number[];
 };
 
 export type MachineStatus = "idle" | "running" | "done";
@@ -43,8 +53,10 @@ export type PublicState = {
     mine: boolean;
     reservedUntil: number | null;
     reservedForMe: boolean;
+    broken: Broken | null;
   }[];
-  queue: { pos: number; joinedAt: number; eta: number; called: boolean; mine: boolean }[];
+  /** `eta` is null while both machines are out of order. */
+  queue: { pos: number; joinedAt: number; eta: number | null; called: boolean; mine: boolean }[];
   me: {
     sessions: {
       machine: MachineId;
@@ -55,7 +67,7 @@ export type PublicState = {
     }[];
     queue: {
       pos: number;
-      eta: number;
+      eta: number | null;
       calledFor: MachineId | null;
       calledAt: number | null;
       /** Owner whose clothes are still in the machine you've been called for. */

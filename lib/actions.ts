@@ -1,6 +1,6 @@
-import { activeReservation, callFor, machineStatus } from "./status";
+import { activeReservation, callFor, isBroken, machineStatus, RESERVE_MS } from "./status";
+import { recordStart } from "./stats";
 import { Conflict, mutate } from "./store";
-import { scheduleCycleEnd } from "./schedule";
 import type { MachineId, Person, State } from "./types";
 
 const label = (m: MachineId) => `Machine ${m}`;
@@ -8,18 +8,21 @@ const clock = (t: number) =>
   new Date(t).toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit", timeZone: "Asia/Kolkata" });
 
 export async function startWash(deviceId: string, m: MachineId, minutes: number, who: Person) {
-  const { result: endsAt } = await mutate((state, now, notices) => {
+  const { now: startedAt } = await mutate((state, now, notices) => {
     const old = state.machines[m];
+    if (isBroken(state, m)) throw new Conflict(`${label(m)} is marked out of order. Mark it as working first.`);
     if (machineStatus(old, now) === "running") throw new Conflict(`${label(m)} is still running`);
 
     const r = activeReservation(state, m, now);
     if (r && r.deviceId !== deviceId) {
       throw new Conflict(
-        `${label(m)} is held for the next person in the queue until ${clock(r.calledAt! + 15 * 60_000)}`,
+        `${label(m)} is held for the next person in the queue until ${clock(r.calledAt! + RESERVE_MS)}`,
       );
     }
 
-    const leftover = old && machineStatus(old, now) === "done" ? old : null;
+    // Clothes are still inside unless the owner said they collected them.
+    const leftover =
+      old && (machineStatus(old, now) === "done" || (old.autoClearedAt && !old.collectedAt)) ? old : null;
     if (leftover && leftover.deviceId !== deviceId) {
       notices.push({
         deviceId: leftover.deviceId,
@@ -30,21 +33,19 @@ export async function startWash(deviceId: string, m: MachineId, minutes: number,
     }
 
     state.queue = state.queue.filter((q) => q.deviceId !== deviceId);
-    const endsAt = now + minutes * 60_000;
     state.machines[m] = {
       id: crypto.randomUUID(),
       deviceId,
       ...who,
       startedAt: now,
-      endsAt,
+      endsAt: now + minutes * 60_000,
       prev:
         leftover && leftover.deviceId !== deviceId
           ? { name: leftover.name, room: leftover.room, phone: leftover.phone }
           : undefined,
     };
-    return endsAt;
   });
-  await scheduleCycleEnd(endsAt);
+  await recordStart(startedAt);
 }
 
 function ownSession(state: State, m: MachineId, deviceId: string, now: number) {
@@ -57,13 +58,12 @@ function ownSession(state: State, m: MachineId, deviceId: string, now: number) {
 
 /** The display on the machine changed: reset the countdown to `minutes` from now. */
 export async function setMinutesLeft(deviceId: string, m: MachineId, minutes: number) {
-  const { result: endsAt } = await mutate((state, now) => {
+  await mutate((state, now) => {
     const s = ownSession(state, m, deviceId, now);
     s.endsAt = now + minutes * 60_000;
     s.notifiedDone = false;
-    return s.endsAt;
+    s.remindedAt = undefined;
   });
-  await scheduleCycleEnd(endsAt);
 }
 
 /** Cycle finished before the timer did. Clothes are still inside. */
@@ -107,5 +107,28 @@ export async function joinQueue(deviceId: string, who: Person) {
 export async function leaveQueue(deviceId: string) {
   await mutate((state) => {
     state.queue = state.queue.filter((q) => q.deviceId !== deviceId);
+  });
+}
+
+/** Anyone can flag a machine as broken, or as working again. */
+export async function setBroken(m: MachineId, broken: boolean, note = "") {
+  await mutate((state, now) => {
+    state.broken ??= {};
+    if (broken) state.broken[m] = { note, at: now };
+    else delete state.broken[m];
+  });
+}
+
+/** Admin: empty a machine regardless of who is using it. */
+export async function adminClearMachine(m: MachineId) {
+  await mutate((state) => {
+    state.machines[m] = null;
+  });
+}
+
+/** Admin: take someone off the queue. */
+export async function adminRemoveFromQueue(id: string) {
+  await mutate((state) => {
+    state.queue = state.queue.filter((q) => q.id !== id);
   });
 }

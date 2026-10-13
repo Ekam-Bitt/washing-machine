@@ -120,3 +120,7 @@ body {
     @apply text-xs font-medium uppercase tracking-wide text-muted;
   }
 }
+
+.wm-broken {
+  opacity: 0.35;
+}

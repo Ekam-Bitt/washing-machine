@@ -11,6 +11,12 @@ import {
 
 /** How long the person at the front keeps first claim on a freed machine. */
 export const RESERVE_MS = 15 * 60_000;
+/** Nudge the owner if their finished clothes are still inside after this while someone waits. */
+export const REMIND_MS = 10 * 60_000;
+/** A finished wash nobody marked as collected goes back to Free after this. */
+export const STALE_MS = 3 * 60 * 60_000;
+/** Letting this many holds run out while others wait drops you from the queue. */
+const MAX_SKIPS = 2;
 /** Assumed length of a wash when estimating queue waits. */
 const AVG_CYCLE_MS = 45 * 60_000;
 /** Time to unload one machine and load the next. */
@@ -19,13 +25,15 @@ const SWAP_MS = 5 * 60_000;
 const label = (m: MachineId) => `Machine ${m}`;
 
 export function machineStatus(s: Session | null, now: number): MachineStatus {
-  if (!s || s.collectedAt) return "idle";
+  if (!s || s.collectedAt || s.autoClearedAt) return "idle";
   return now < s.endsAt ? "running" : "done";
 }
 
 export function emptyState(): State {
   return { machines: { A: null, B: null }, queue: [] };
 }
+
+export const isBroken = (state: State, m: MachineId) => !!state.broken?.[m];
 
 export function callFor(state: State, m: MachineId) {
   return state.queue.find((q) => q.calledFor === m) ?? null;
@@ -38,18 +46,21 @@ export function activeReservation(state: State, m: MachineId, now: number) {
 }
 
 /**
- * Advances the state to `now`: notices finished cycles, and hands every freed
- * machine to the next person waiting. Mutates `state`; returns the pushes to
- * send. Running it twice in a row is a no-op, so any caller can run it.
+ * Advances the state to `now`: notices finished cycles, nudges owners who
+ * haven't collected, moves people who let their hold run out, and hands every
+ * freed machine to the next person waiting. Mutates `state`; returns the
+ * pushes to send. Running it twice in a row is a no-op, so any caller can.
  */
 export function tick(state: State, now: number): Notice[] {
   const notices: Notice[] = [];
 
   for (const m of MACHINE_IDS) {
     const s = state.machines[m];
-    if (s && machineStatus(s, now) === "done" && !s.notifiedDone) {
+    if (!s || machineStatus(s, now) !== "done") continue;
+    const waiting = state.queue.length;
+
+    if (!s.notifiedDone) {
       s.notifiedDone = true;
-      const waiting = state.queue.length;
       notices.push({
         deviceId: s.deviceId,
         tag: `done-${s.id}`,
@@ -59,20 +70,64 @@ export function tick(state: State, now: number): Notice[] {
           (waiting ? ` ${waiting} ${waiting === 1 ? "person is" : "people are"} waiting.` : ""),
       });
     }
+
+    if (!s.remindedAt && waiting > 0 && now >= s.endsAt + REMIND_MS) {
+      s.remindedAt = now;
+      notices.push({
+        deviceId: s.deviceId,
+        tag: `remind-${s.id}`,
+        title: "Someone is waiting for your machine",
+        body: `Your clothes are still in ${label(m)}. Please collect them.`,
+      });
+    }
+
+    if (now >= s.endsAt + STALE_MS) s.autoClearedAt = now;
   }
 
-  // A call is void once someone else has the machine running.
+  // A call is void once someone else has the machine running, or it breaks.
   for (const q of state.queue) {
     if (!q.calledFor) continue;
     const s = state.machines[q.calledFor];
-    if (machineStatus(s, now) === "running" && s!.deviceId !== q.deviceId) {
+    const takenByOther = machineStatus(s, now) === "running" && s!.deviceId !== q.deviceId;
+    if (takenByOther || isBroken(state, q.calledFor)) {
       q.calledFor = undefined;
       q.calledAt = undefined;
     }
   }
 
+  // Let the next person go ahead of anyone whose hold ran out. Nobody else
+  // waiting means nobody is held up, so the hold stays.
+  for (const q of [...state.queue]) {
+    if (!q.calledFor || !q.calledAt || now - q.calledAt < RESERVE_MS) continue;
+    const i = state.queue.indexOf(q);
+    const next = state.queue.findIndex((o, j) => j > i && !o.calledFor);
+    if (next === -1) continue;
+    const m = q.calledFor;
+    q.calledFor = undefined;
+    q.calledAt = undefined;
+    q.skips = (q.skips ?? 0) + 1;
+    state.queue.splice(i, 1);
+    if (q.skips >= MAX_SKIPS) {
+      notices.push({
+        deviceId: q.deviceId,
+        tag: `skip-${q.id}`,
+        title: "Removed from the queue",
+        body: `You missed your turn on ${label(m)} twice, so you've been taken off the queue. Join again any time.`,
+      });
+    } else {
+      // `next` was counted with q still in the list, so this lands right behind that person.
+      state.queue.splice(next, 0, q);
+      notices.push({
+        deviceId: q.deviceId,
+        tag: `skip-${q.id}`,
+        title: "You missed your turn",
+        body: `Your hold on ${label(m)} ran out, so the next person went ahead. You're still in the queue.`,
+      });
+    }
+  }
+
   for (const m of MACHINE_IDS) {
-    if (machineStatus(state.machines[m], now) === "running" || callFor(state, m)) continue;
+    if (isBroken(state, m) || machineStatus(state.machines[m], now) === "running" || callFor(state, m)) continue;
     const next = state.queue.find((q) => !q.calledFor);
     if (!next) break;
     next.calledFor = m;
@@ -91,14 +146,28 @@ export function tick(state: State, now: number): Notice[] {
   return notices;
 }
 
+/** Future moments when `tick` would do something without anyone making a request. */
+export function wakeups(state: State, now: number): number[] {
+  const times: number[] = [];
+  for (const m of MACHINE_IDS) {
+    const s = state.machines[m];
+    const status = machineStatus(s, now);
+    if (status === "running") times.push(s!.endsAt);
+    if (status !== "idle" && !s!.remindedAt && state.queue.length) times.push(s!.endsAt + REMIND_MS);
+  }
+  for (const q of state.queue) if (q.calledAt) times.push(q.calledAt + RESERVE_MS);
+  return times.filter((t) => t > now);
+}
+
 /** Estimated time each queue entry gets a machine, in queue order. */
-function queueEtas(state: State, now: number): number[] {
-  const free = MACHINE_IDS.map((m) => {
+function queueEtas(state: State, now: number): (number | null)[] {
+  const free = MACHINE_IDS.filter((m) => !isBroken(state, m)).map((m) => {
     const s = state.machines[m];
     return machineStatus(s, now) === "running" ? s!.endsAt + SWAP_MS : now;
   });
   return state.queue.map((q) => {
     if (q.calledFor) return now;
+    if (!free.length) return null;
     free.sort((a, b) => a - b);
     const eta = Math.max(free[0], now);
     free[0] = eta + AVG_CYCLE_MS + SWAP_MS;
@@ -137,6 +206,7 @@ export function publicView(state: State, deviceId: string, now: number): PublicS
         mine: status !== "idle" && s!.deviceId === deviceId,
         reservedUntil: r ? r.calledAt! + RESERVE_MS : null,
         reservedForMe: r?.deviceId === deviceId,
+        broken: state.broken?.[m] ?? null,
       };
     }),
     queue: state.queue.map((q, i) => ({

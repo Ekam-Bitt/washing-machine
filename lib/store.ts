@@ -1,7 +1,8 @@
 import { Redis } from "@upstash/redis";
-import { emptyState, tick } from "./status";
+import { emptyState, tick, wakeups } from "./status";
 import type { Notice, State } from "./types";
 import { sendNotices } from "./push";
+import { scheduleWakeups } from "./schedule";
 
 const STATE_KEY = "wm:state";
 const LOCK_KEY = "wm:lock";
@@ -12,6 +13,8 @@ type KV = {
   del(key: string): Promise<unknown>;
   incr(key: string): Promise<number>;
   expire(key: string, seconds: number): Promise<unknown>;
+  hincrby(key: string, field: string, by: number): Promise<number>;
+  hgetall<T extends Record<string, unknown>>(key: string): Promise<T | null>;
 };
 
 /** Stand-in for local development before Redis is configured. */
@@ -47,6 +50,16 @@ function memoryKV(): KV {
       const e = live(k);
       if (e) e.exp = Date.now() + s * 1000;
     },
+    async hincrby(k, f, by) {
+      const h = (live(k)?.v as Record<string, number>) ?? {};
+      h[f] = (h[f] ?? 0) + by;
+      m.set(k, { v: h });
+      return h[f];
+    },
+    async hgetall<T>(k: string) {
+      const e = live(k);
+      return e ? (structuredClone(e.v) as T) : null;
+    },
   };
 }
 
@@ -73,7 +86,9 @@ export class Conflict extends Error {}
 
 /**
  * Runs `fn` on the latest state under a lock, with `tick` run before and
- * after it. Writes the result back and sends any pushes produced.
+ * after it. Writes the result back, sends any pushes produced, and asks
+ * QStash to wake us for any new timed event (a cycle ending, a hold running
+ * out) so those happen even when nobody has the page open.
  * `fn` can throw `Conflict` to reject the request without writing.
  */
 export async function mutate<T>(
@@ -87,6 +102,7 @@ export async function mutate<T>(
     await new Promise((r) => setTimeout(r, 100));
   }
   let notices: Notice[];
+  let fresh: number[] = [];
   let out: { state: State; result: T; now: number };
   try {
     const state = await readState();
@@ -95,12 +111,17 @@ export async function mutate<T>(
     const result = fn(state, now, notices);
     // The change may have freed a machine for the next person in the queue.
     notices.push(...tick(state, now));
+
+    const known = (state.scheduled ?? []).filter((t) => t * 1000 > now - 60_000);
+    fresh = [...new Set(wakeups(state, now).map((t) => Math.ceil(t / 1000)))].filter((t) => !known.includes(t));
+    state.scheduled = [...known, ...fresh];
+
     await kvs.set(STATE_KEY, state);
     out = { state, result, now };
   } finally {
     if ((await kvs.get(LOCK_KEY)) === token) await kvs.del(LOCK_KEY);
   }
-  await sendNotices(notices);
+  await Promise.all([sendNotices(notices), scheduleWakeups(fresh)]);
   return out;
 }
 

@@ -1,8 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, clock, countdown, enablePush, minutesFromNow, pushSupport, type PushSupport } from "@/lib/client";
+import { RESERVE_MS } from "@/lib/status";
 import type { MachineId, PublicState } from "@/lib/types";
+import { BusyHours } from "./BusyHours";
 import { ContactCard } from "./ContactCard";
 import { PersonForm } from "./PersonForm";
 import { PinGate } from "./PinGate";
@@ -11,7 +13,19 @@ import { WashingMachine } from "./WashingMachine";
 type Machine = PublicState["machines"][number];
 type Form = { kind: "start"; machine: MachineId } | { kind: "queue" } | null;
 
-const POLL_MS = 5000;
+// Countdowns tick locally, so the server is only asked for changes made by
+// other people. Polling stops while the tab is hidden.
+const ACTIVE_POLL_MS = 10_000;
+const IDLE_POLL_MS = 30_000;
+
+function nextPoll(d: PublicState | null) {
+  if (!d) return ACTIVE_POLL_MS;
+  const busy = d.machines.some((m) => m.status !== "idle") || d.queue.length > 0;
+  if (!busy) return IDLE_POLL_MS;
+  // Refresh just after the next cycle ends so the hand-over shows promptly.
+  const ends = d.machines.flatMap((m) => (m.status === "running" && m.endsAt ? [m.endsAt - d.now] : []));
+  return Math.max(1000, Math.min(ACTIVE_POLL_MS, ...ends.map((ms) => ms + 1500)));
+}
 
 export function Dashboard() {
   const [data, setData] = useState<PublicState | null>(null);
@@ -21,11 +35,15 @@ export function Dashboard() {
   const [form, setForm] = useState<Form>(null);
   const [error, setError] = useState<string | null>(null);
   const [alerts, setAlerts] = useState<PushSupport>("unsupported");
+  const [reporting, setReporting] = useState<MachineId | null>(null);
+  const [stats, setStats] = useState<{ starts: number[][]; now: { dow: number; hour: number } } | null>(null);
+  const latest = useRef<PublicState | null>(null);
 
   const load = useCallback(async () => {
     try {
       const d: PublicState = await api("GET", "/api/state");
       setData(d);
+      latest.current = d;
       setNow(Date.now());
       setSkew(d.now - Date.now());
       setAuthed(true);
@@ -38,13 +56,23 @@ export function Dashboard() {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- reading browser-only capabilities once on mount
     setAlerts(pushSupport());
     navigator.serviceWorker?.register("/sw.js").catch(() => {});
-    load();
-    const poll = setInterval(load, POLL_MS);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let generation = 0;
+    const poll = async () => {
+      clearTimeout(timer);
+      if (document.visibilityState !== "visible") return;
+      const mine = ++generation;
+      await load();
+      if (mine === generation) timer = setTimeout(poll, nextPoll(latest.current));
+    };
+    poll();
+    api("GET", "/api/stats").then(setStats, () => {});
     const tick = setInterval(() => setNow(Date.now()), 1000);
-    const onVisible = () => document.visibilityState === "visible" && load();
+    const onVisible = () => (document.visibilityState === "visible" ? poll() : clearTimeout(timer));
     document.addEventListener("visibilitychange", onVisible);
     return () => {
-      clearInterval(poll);
+      generation++;
+      clearTimeout(timer);
       clearInterval(tick);
       document.removeEventListener("visibilitychange", onVisible);
     };
@@ -65,12 +93,22 @@ export function Dashboard() {
 
   const turnOnAlerts = async (test = false) => setAlerts(await enablePush(test).catch(() => pushSupport()));
 
-  if (authed === false) return <PinGate onDone={load} />;
+  if (authed === false) {
+    return (
+      <PinGate
+        onDone={() => {
+          load();
+          api("GET", "/api/stats").then(setStats, () => {});
+        }}
+      />
+    );
+  }
   if (!data) return <p className="p-8 text-center text-sm text-muted">Loading…</p>;
 
   const t = now + skew;
   const left = (m: { endsAt: number | null }) => (m.endsAt ?? t) - t;
-  const startable = (m: Machine) => m.status !== "running" && (!m.reservedUntil || m.reservedForMe);
+  const startable = (m: Machine) =>
+    !m.broken && m.status !== "running" && (!m.reservedUntil || m.reservedForMe);
   const anyStartable = data.machines.some(startable);
   const { sessions, queue: myQueue } = data.me;
 
@@ -83,29 +121,56 @@ export function Dashboard() {
 
       <section className="grid grid-cols-2 gap-3" aria-label="Machines">
         {data.machines.map((m) => (
-          <button
-            key={m.id}
-            type="button"
-            disabled={!startable(m) || !!form}
-            onClick={() => {
-              void turnOnAlerts();
-              setForm({ kind: "start", machine: m.id });
-            }}
-            className="group flex flex-col justify-start rounded-2xl border border-line/15 p-3 text-left transition enabled:hover:border-line disabled:cursor-default"
-          >
-            <WashingMachine
-              status={m.status}
-              display={m.status === "running" ? countdown(left(m)) : m.status === "done" ? "End" : ""}
-              className="mx-auto max-w-[180px]"
-            />
-            <div className="mt-3 flex items-baseline justify-between gap-2">
-              <span className="font-medium">Machine {m.id}</span>
-              {m.mine && <span className="rounded-full border border-line px-2 text-xs">Yours</span>}
-            </div>
-            <MachineLine m={m} msLeft={left(m)} />
-          </button>
+          <div key={m.id} className="flex flex-col rounded-2xl border border-line/15 transition has-[button:enabled:hover]:border-line">
+            <button
+              type="button"
+              disabled={!startable(m) || !!form}
+              onClick={() => {
+                void turnOnAlerts();
+                setForm({ kind: "start", machine: m.id });
+              }}
+              className="flex flex-1 flex-col justify-start p-3 pb-1 text-left disabled:cursor-default"
+            >
+              <WashingMachine
+                status={m.status}
+                broken={!!m.broken}
+                display={
+                  m.broken ? "Err" : m.status === "running" ? countdown(left(m)) : m.status === "done" ? "End" : ""
+                }
+                className="mx-auto max-w-[180px]"
+              />
+              <div className="mt-3 flex items-baseline justify-between gap-2">
+                <span className="font-medium">Machine {m.id}</span>
+                {m.mine && <span className="rounded-full border border-line px-2 text-xs">Yours</span>}
+              </div>
+              <MachineLine m={m} msLeft={left(m)} />
+            </button>
+            <button
+              type="button"
+              className="self-start px-3 pb-3 pt-1 text-xs text-muted underline underline-offset-2 hover:text-foreground"
+              onClick={() =>
+                m.broken
+                  ? run(() => api("PATCH", "/api/machine", { machine: m.id, broken: false }))
+                  : setReporting(m.id)
+              }
+            >
+              {m.broken ? "Mark as working" : "Report a problem"}
+            </button>
+          </div>
         ))}
       </section>
+
+      {reporting && (
+        <ReportForm
+          machine={reporting}
+          onCancel={() => setReporting(null)}
+          onSubmit={async (note) => {
+            if (await run(() => api("PATCH", "/api/machine", { machine: reporting, broken: true, note }))) {
+              setReporting(null);
+            }
+          }}
+        />
+      )}
 
       {error && (
         <p role="alert" className="mt-4 rounded-xl border border-red-600 px-3 py-2 text-sm text-red-700">
@@ -131,7 +196,7 @@ export function Dashboard() {
               <>
                 <p className="text-lg font-semibold">You&apos;re up: Machine {myQueue.calledFor}</p>
                 <p className="mt-1 text-sm text-muted">
-                  It&apos;s held for you until {clock(myQueue.calledAt! + 15 * 60_000)}. After that anyone can use it.
+                  It&apos;s held for you until {clock(myQueue.calledAt! + RESERVE_MS)}. After that anyone can use it.
                 </p>
                 {myQueue.contact && (
                   <ContactCard title="Clothes still inside belong to" person={myQueue.contact} />
@@ -153,8 +218,10 @@ export function Dashboard() {
               <>
                 <p className="text-lg font-semibold">You&apos;re #{myQueue.pos} in the queue</p>
                 <p className="mt-1 text-sm text-muted">
-                  Estimated around {clock(myQueue.eta)} ({minutesFromNow(myQueue.eta - t)}). We&apos;ll ping you
-                  when a machine frees up.
+                  {myQueue.eta === null
+                    ? "Both machines are out of order right now."
+                    : `Estimated around ${clock(myQueue.eta)} (${minutesFromNow(myQueue.eta - t)}).`}{" "}
+                  We&apos;ll ping you when a machine frees up.
                 </p>
                 <button className="btn mt-4" onClick={() => run(() => api("DELETE", "/api/queue"))}>
                   Leave queue
@@ -231,12 +298,14 @@ export function Dashboard() {
                   #{q.pos} {q.mine ? "You" : "Someone"}
                   <span className="ml-2 font-normal text-muted">waiting {minutesFromNow(t - q.joinedAt)}</span>
                 </span>
-                <span className="font-normal text-muted">{q.called ? "Called" : `~${clock(q.eta)}`}</span>
+                <span className="font-normal text-muted">{q.called ? "Called" : q.eta === null ? "" : `~${clock(q.eta)}`}</span>
               </li>
             ))}
           </ol>
         )}
       </section>
+
+      {stats && <BusyHours starts={stats.starts} now={stats.now} />}
 
       <AlertsNote alerts={alerts} onEnable={() => turnOnAlerts(true)} />
     </main>
@@ -244,6 +313,14 @@ export function Dashboard() {
 }
 
 function MachineLine({ m, msLeft }: { m: Machine; msLeft: number }) {
+  if (m.broken) {
+    return (
+      <p className="text-sm text-muted">
+        Out of order
+        {m.broken.note && <span className="block text-xs">“{m.broken.note}”</span>}
+      </p>
+    );
+  }
   const held = m.reservedUntil && (
     <span className="block text-xs text-muted">
       {m.reservedForMe ? "Held for you" : "Held for next in queue"} till {clock(m.reservedUntil)}
@@ -381,5 +458,47 @@ function AlertsNote({ alerts, onEnable }: { alerts: PushSupport; onEnable: () =>
       {alerts === "denied" && <p>Alerts are blocked for this site. Allow notifications in your browser settings.</p>}
       {alerts === "unsupported" && <p>This browser can&apos;t show alerts. Keep this page open to follow along.</p>}
     </div>
+  );
+}
+
+function ReportForm({
+  machine,
+  onSubmit,
+  onCancel,
+}: {
+  machine: MachineId;
+  onSubmit: (note: string) => Promise<void>;
+  onCancel: () => void;
+}) {
+  const [note, setNote] = useState("");
+  return (
+    <form
+      className="mt-4 rounded-2xl border border-line p-4"
+      onSubmit={async (e) => {
+        e.preventDefault();
+        await onSubmit(note);
+      }}
+    >
+      <label className="block">
+        <span className="text-lg font-semibold">What&apos;s wrong with Machine {machine}?</span>
+        <input
+          className="input mt-3 w-full"
+          maxLength={80}
+          autoFocus
+          placeholder="Not draining, door stuck… (optional)"
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+        />
+      </label>
+      <p className="mt-2 text-xs text-muted">
+        Nobody will be sent to it until someone marks it as working again.
+      </p>
+      <div className="mt-4 flex gap-2">
+        <button className="btn-primary">Mark out of order</button>
+        <button type="button" className="btn" onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+    </form>
   );
 }

@@ -9,20 +9,22 @@ import type { MachineStatus } from "@/lib/types";
 export function WashingMachine({
   status,
   display,
+  broken = false,
   className = "",
 }: {
   status: MachineStatus;
   display: string;
+  broken?: boolean;
   className?: string;
 }) {
-  const running = status === "running";
+  const running = status === "running" && !broken;
   const clipId = `glass${useId().replace(/[^\w-]/g, "")}`;
   return (
     <svg
       viewBox="0 0 880 1000"
       role="img"
-      aria-label={`Washing machine, ${status === "idle" ? "free" : status}`}
-      className={`wm ${running ? "wm-running" : ""} ${status === "done" ? "wm-done" : ""} ${className}`}
+      aria-label={`Washing machine, ${broken ? "out of order" : status === "idle" ? "free" : status}`}
+      className={`wm ${running ? "wm-running" : ""} ${status === "done" || broken ? "wm-done" : ""} ${broken ? "wm-broken" : ""} ${className}`}
       fill="none"
       stroke="currentColor"
       strokeLinecap="round"
