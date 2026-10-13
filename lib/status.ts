@@ -1,3 +1,4 @@
+import { cooldownUntil, held, MAX_HELD, phonesOf } from "./limits";
 import {
   MACHINE_IDS,
   type MachineId,
@@ -217,6 +218,14 @@ export function publicView(state: State, deviceId: string, now: number): PublicS
       mine: q.deviceId === deviceId,
     })),
     me: {
+      booking: (() => {
+        const phones = phonesOf(state, deviceId);
+        return {
+          held: held(state, deviceId, phones, now),
+          max: MAX_HELD,
+          cooldownUntil: cooldownUntil(state, deviceId, phones, now),
+        };
+      })(),
       sessions: MACHINE_IDS.flatMap((m) => {
         const s = state.machines[m];
         const status = machineStatus(s, now);

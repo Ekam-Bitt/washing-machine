@@ -34,6 +34,8 @@ export type State = {
   machines: Record<MachineId, Session | null>;
   queue: QueueEntry[];
   broken?: Partial<Record<MachineId, Broken>>;
+  /** Recent bookings per person (`d:<device>` / `p:<phone>`), for cooldowns. */
+  bookings?: Record<string, { count: number; last: number; until?: number }>;
   /** Wake-up times (unix seconds) already handed to QStash. */
   scheduled?: number[];
 };
@@ -58,6 +60,8 @@ export type PublicState = {
   /** `eta` is null while both machines are out of order. */
   queue: { pos: number; joinedAt: number; eta: number | null; called: boolean; mine: boolean }[];
   me: {
+    /** How much of the booking allowance this device has left. */
+    booking: { held: number; max: number; cooldownUntil: number | null };
     sessions: {
       machine: MachineId;
       status: MachineStatus;

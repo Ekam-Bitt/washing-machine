@@ -1,4 +1,5 @@
 import { activeReservation, callFor, isBroken, machineStatus, RESERVE_MS } from "./status";
+import { assertCanBook, recordBooking } from "./limits";
 import { recordStart } from "./stats";
 import { Conflict, mutate } from "./store";
 import type { MachineId, Person, State } from "./types";
@@ -32,7 +33,14 @@ export async function startWash(deviceId: string, m: MachineId, minutes: number,
       });
     }
 
-    state.queue = state.queue.filter((q) => q.deviceId !== deviceId);
+    // Starting the wash your queue spot was waiting for isn't a new booking.
+    const fromQueue = state.queue.some((q) => q.deviceId === deviceId || q.phone === who.phone);
+    if (!fromQueue) {
+      assertCanBook(state, deviceId, who.phone, now);
+      recordBooking(state, deviceId, who.phone, now);
+    }
+
+    state.queue = state.queue.filter((q) => q.deviceId !== deviceId && q.phone !== who.phone);
     state.machines[m] = {
       id: crypto.randomUUID(),
       deviceId,
@@ -100,6 +108,9 @@ export async function joinQueue(deviceId: string, who: Person) {
       Object.assign(mine, who);
       return;
     }
+    if (state.queue.some((q) => q.phone === who.phone)) throw new Conflict("This phone number is already in the queue");
+    assertCanBook(state, deviceId, who.phone, now);
+    recordBooking(state, deviceId, who.phone, now);
     state.queue.push({ id: crypto.randomUUID(), deviceId, ...who, joinedAt: now });
   });
 }

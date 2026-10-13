@@ -110,7 +110,9 @@ export function Dashboard() {
   const startable = (m: Machine) =>
     !m.broken && m.status !== "running" && (!m.reservedUntil || m.reservedForMe);
   const anyStartable = data.machines.some(startable);
-  const { sessions, queue: myQueue } = data.me;
+  const { sessions, queue: myQueue, booking } = data.me;
+  // Starting the wash your queue spot was waiting for never counts against the limits.
+  const canBook = !!myQueue || (booking.held < booking.max && !booking.cooldownUntil);
 
   return (
     <main className="mx-auto w-full max-w-xl px-4 pb-16 pt-8">
@@ -124,7 +126,7 @@ export function Dashboard() {
           <div key={m.id} className="flex flex-col rounded-2xl border border-line/15 transition has-[button:enabled:hover]:border-line">
             <button
               type="button"
-              disabled={!startable(m) || !!form}
+              disabled={!startable(m) || !!form || !canBook}
               onClick={() => {
                 void turnOnAlerts();
                 setForm({ kind: "start", machine: m.id });
@@ -258,7 +260,15 @@ export function Dashboard() {
           />
         )}
 
-        {!form && !myQueue && (
+        {!form && !myQueue && !canBook && (
+          <p className="rounded-2xl bg-soft px-4 py-3 text-sm">
+            {booking.held >= booking.max
+              ? `You have ${booking.max} bookings going. Collect a finished load or leave the queue to book again.`
+              : `You've used your ${booking.max} bookings. You can book again at ${clock(booking.cooldownUntil!)}.`}
+          </p>
+        )}
+
+        {!form && !myQueue && canBook && (
           <div className="flex flex-wrap gap-2">
             {anyStartable ? (
               <button

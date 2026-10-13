@@ -82,7 +82,7 @@ export async function readState(): Promise<State> {
   return (await store().get<State>(STATE_KEY)) ?? emptyState();
 }
 
-export class Conflict extends Error {}
+export { Conflict } from "./errors";
 
 /**
  * Runs `fn` on the latest state under a lock, with `tick` run before and

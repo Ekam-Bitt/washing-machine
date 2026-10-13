@@ -8,6 +8,7 @@ A small web app for sharing the two washing machines on the roof of the PG.
 - When it's your turn and the previous clothes are still inside, you see the owner's name, room and phone number so you can get in touch. Nobody else sees them.
 - If finished clothes are still inside 10 minutes later and someone is waiting, the owner gets a reminder. A finished wash nobody marks as collected goes back to Free after 3 hours.
 - The person at the front of the queue has a 15 minute hold on a freed machine. If they don't show up and someone else is waiting, the next person goes ahead. Missing two turns takes you off the queue.
+- Booking limits stop one person taking every slot: at most 2 bookings at once (a wash in progress or a queue spot each), then a 1 hour cooldown after the second. Starting the wash your queue spot was waiting for isn't a new booking. Limits apply per device and per phone number, so switching browsers doesn't reset them. Bookings older than 3 hours stop counting.
 - Anyone can mark a machine out of order (with a note) or working again. Nobody gets sent to a broken machine.
 - A busy-hours chart shows when washes usually start, to help pick a quiet time. Only the hour is recorded.
 - `/admin` (separate admin PIN): see who's using each machine and who's queued, clear a stuck machine, remove someone from the queue, change the building PIN, and sign every device out.
